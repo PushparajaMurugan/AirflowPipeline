@@ -22,7 +22,7 @@ import hashlib
 import datetime
 from airflow.utils import timezone
 from flask import Flask, request, jsonify
-
+import numpy as np
 EXP_NAME = 'cifar10_REDO_Github'
 RUN_NAME = 'Dummy1'
 
