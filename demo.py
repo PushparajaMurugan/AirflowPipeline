@@ -21,22 +21,53 @@ import hmac
 import hashlib
 import datetime
 from airflow.utils import timezone
-
+from flask import Flask, request, jsonify
 
 EXP_NAME = 'cifar10_REDO_Github'
 RUN_NAME = 'Dummy1'
+
+# app = Flask(__name__)
+# # Define the webhook handler function
+# def handle_webhook(dag_run_payload):
+#     dag_run = DagRun.find(dag_id=EXP_NAME, state='running')
+#     if dag_run:
+#         print(f"DAG run for '{EXP_NAME}' is already in progress.")
+#     else:
+#         run_id = f"{EXP_NAME}_{datetime.datetime.now().isoformat()}"
+#         run_conf = {'payload': dag_run_payload}
+#         dag.create_dagrun(
+#             run_id=run_id,
+#             state=State.RUNNING,
+#             execution_date=timezone.utcnow(),
+#             conf=run_conf,
+#             external_trigger=True,
+#         )
+#         print(f"DAG run '{run_id}' triggered for '{EXP_NAME}'.")
 
 app = Flask(__name__)
 
 
 # Define the webhook handler function
-def handle_webhook(dag_run_payload):
+@app.route('/webhook', methods=['POST'])
+def handle_webhook():
+    event = request.headers.get('X-GitHub-Event')
+    if event == 'push':
+        payload = request.json
+        # Extract relevant information from the payload, e.g., repository, commit, file changes, etc.
+        # Trigger the Airflow DAG based on the extracted information using the `trigger_dag` method or create a new DAG run
+        trigger_airflow_dag(payload)
+        return jsonify({'status': 'success'})
+    else:
+        return jsonify({'status': 'ignored'})
+
+
+def trigger_airflow_dag(payload):
     dag_run = DagRun.find(dag_id=EXP_NAME, state='running')
     if dag_run:
         print(f"DAG run for '{EXP_NAME}' is already in progress.")
     else:
         run_id = f"{EXP_NAME}_{datetime.datetime.now().isoformat()}"
-        run_conf = {'payload': dag_run_payload}
+        run_conf = {'payload': payload}
         dag.create_dagrun(
             run_id=run_id,
             state=State.RUNNING,
@@ -45,7 +76,6 @@ def handle_webhook(dag_run_payload):
             external_trigger=True,
         )
         print(f"DAG run '{run_id}' triggered for '{EXP_NAME}'.")
-
 
 def setup_mlflow():
     mlflow.set_tracking_uri("http://0.0.0.0:5000")
@@ -166,20 +196,28 @@ def evaluate_model(**context):
     end_mlflow()
 
 
+
 default_args = {
-    'start_date': airflow.utils.dates.days_ago(1),
+    'owner': 'airflow',
+    'start_date': datetime.datetime(2023, 6, 19),
+    'retries': 1,
+    'retry_delay': datetime.timedelta(minutes=5),
     'provide_context': True,
 }
 
 
-with DAG(EXP_NAME, default_args=default_args, schedule_interval=None) as dag:
+with DAG(EXP_NAME,
+         default_args=default_args,
+         schedule_interval='@once') as dag:
 
-    github_webhook_task = PythonOperator(
-        task_id='github_webhook',
-        python_callable=handle_webhook,
-        op_args=['{{ dag_run.conf }}'],  # Pass the dag_run.conf as an argument
+    webhook_sensor = FileSensor(
+        task_id='webhook_sensor',
+        poke_interval=10,
+        fs_conn_id='github_webhook',
+        filepath='webhook_trigger',
         dag=dag
     )
+
 
     mlflow_start_task = PythonOperator(
         task_id='starting_MLFlow_Server',
@@ -224,7 +262,7 @@ with DAG(EXP_NAME, default_args=default_args, schedule_interval=None) as dag:
 
     end_task = DummyOperator(task_id='end')
 
-    github_webhook_task >> mlflow_start_task
+    webhook_sensor >> mlflow_start_task
     mlflow_start_task >> download_task
     download_task >> normalize_task
 
