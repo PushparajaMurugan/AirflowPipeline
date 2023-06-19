@@ -12,12 +12,39 @@ from airflow.operators.bash_operator import BashOperator
 
 import tensorflow as tf
 from tensorflow.keras.datasets import cifar10
-
+from airflow.models import DagRun
+from airflow.utils.state import State
 import mlflow
 import mlflow.tensorflow
+from flask import Flask, request
+import hmac
+import hashlib
+import datetime
+from airflow.utils import timezone
 
-EXP_NAME = 'cifar10_REDO_11'
+
+EXP_NAME = 'cifar10_REDO_Github'
 RUN_NAME = 'Dummy1'
+
+app = Flask(__name__)
+
+
+# Define the webhook handler function
+def handle_webhook(dag_run_payload):
+    dag_run = DagRun.find(dag_id=EXP_NAME, state='running')
+    if dag_run:
+        print(f"DAG run for '{EXP_NAME}' is already in progress.")
+    else:
+        run_id = f"{EXP_NAME}_{datetime.datetime.now().isoformat()}"
+        run_conf = {'payload': dag_run_payload}
+        dag.create_dagrun(
+            run_id=run_id,
+            state=State.RUNNING,
+            execution_date=timezone.utcnow(),
+            conf=run_conf,
+            external_trigger=True,
+        )
+        print(f"DAG run '{run_id}' triggered for '{EXP_NAME}'.")
 
 
 def setup_mlflow():
@@ -138,6 +165,7 @@ def evaluate_model(**context):
 
     end_mlflow()
 
+
 default_args = {
     'start_date': airflow.utils.dates.days_ago(1),
     'provide_context': True,
@@ -145,6 +173,13 @@ default_args = {
 
 
 with DAG(EXP_NAME, default_args=default_args, schedule_interval=None) as dag:
+
+    github_webhook_task = PythonOperator(
+        task_id='github_webhook',
+        python_callable=handle_webhook,
+        op_args=['{{ dag_run.conf }}'],  # Pass the dag_run.conf as an argument
+        dag=dag
+    )
 
     mlflow_start_task = PythonOperator(
         task_id='starting_MLFlow_Server',
@@ -189,6 +224,7 @@ with DAG(EXP_NAME, default_args=default_args, schedule_interval=None) as dag:
 
     end_task = DummyOperator(task_id='end')
 
+    github_webhook_task >> mlflow_start_task
     mlflow_start_task >> download_task
     download_task >> normalize_task
 
@@ -196,3 +232,8 @@ with DAG(EXP_NAME, default_args=default_args, schedule_interval=None) as dag:
     build_classifier_task >> train_model_task
     train_model_task >> evaluate_model_task
     evaluate_model_task >> cleanup_task >> end_task
+
+
+# Run the Flask application
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
