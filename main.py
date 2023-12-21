@@ -3,7 +3,6 @@ import pickle
 
 
 def SimpleCalculator(args):
-    os.mkdir(args.save_dir, exist_ok=True)
     total = args.number1 + args.number2
     with open(f"{args.save_dir}/total.pickle", "wb") as f:
         pickle.dump(total, f)
